@@ -5,6 +5,7 @@ using EFCore.Tests.Models;
 using EFCore.Tests.Repositories;
 using EFCore.Tests.Repositories.Abstractions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
@@ -37,11 +38,54 @@ namespace EFCore.Tests
                 .UseLoggerFactory(loggerFactory).UseSqlServer(connection).Options
             );
 
-            container.Register<IContextFactory, EntityFrameworkContextFactory>(Reuse.Singleton);
-            container.Register<ITransactionManager, EntityFrameworkTransactionManager>(Reuse.Singleton);
-            container.Register(serviceType: typeof(IRepository<>), implementationType: typeof(EntityFrameworkRepository<>), reuse: Reuse.Transient);
-            container.Register<IItem2Repository, Item2Repository>(Reuse.Transient);
-            container.Register(serviceType: typeof(IBaseBusiness<>), implementationType: typeof(BaseBusiness<>), reuse: Reuse.Transient);
+            //register delegate for in memory database
+            container.RegisterDelegate(
+                serviceKey: "InMemory",
+                factoryDelegate: resolver => new DbContextOptionsBuilder()
+                    .UseLoggerFactory(loggerFactory)
+                    .UseInMemoryDatabase()
+                    .UseInternalServiceProvider(new ServiceCollection()
+                        .AddEntityFrameworkInMemoryDatabase()
+                        .BuildServiceProvider()
+                    )
+                    .Options
+            );
+
+            container.Register<IContextFactory, EntityFrameworkContextFactory>(
+                reuse: Reuse.Singleton
+            );
+
+            //register chain service keys to discover new context options with "new connection strings"
+            container.Register<IContextFactory, EntityFrameworkContextFactory>(
+                serviceKey: "Item2RepositoryCustomFactory",
+                made: Parameters.Of.Type<DbContextOptions>(
+                    serviceKey: "InMemory"
+                )
+            );
+
+            container.Register<ITransactionManager, EntityFrameworkTransactionManager>(
+                reuse: Reuse.Singleton
+            );
+
+            container.Register(
+                serviceType: typeof(IRepository<>),
+                implementationType: typeof(EntityFrameworkRepository<>),
+                reuse: Reuse.Transient
+            );
+
+            //register chain service keys to discover new context factories with "new connection strings"
+            container.Register<IItem2Repository, Item2Repository>(
+                reuse: Reuse.Transient,
+                made: Parameters.Of.Type<IContextFactory>(
+                    serviceKey: "Item2RepositoryCustomFactory"
+                )
+            );
+
+            container.Register(
+                serviceType: typeof(IBaseBusiness<>), 
+                implementationType: typeof(BaseBusiness<>), 
+                reuse: Reuse.Transient
+            );
 
             var genericRepository = container.Resolve<IRepository<Item2>>();
             var singleItem = await genericRepository.SelectSingleAsync(w => true);
@@ -81,7 +125,7 @@ namespace EFCore.Tests
             };
 
             var watcher = Stopwatch.StartNew();
-            
+
             logger.LogInformation("SYNC INSERT");
             rep.Insert(item);
 
@@ -170,7 +214,8 @@ namespace EFCore.Tests
             watcher.Restart();
             var itensList = new Item2[100];
             for (int i = 0; i < itensList.Length; i++)
-                itensList[i]= new Item2 {
+                itensList[i] = new Item2
+                {
                     IdRef = 1,
                     Name = $"Item{i.ToString()}"
                 };
@@ -243,7 +288,7 @@ namespace EFCore.Tests
                         rep2.Insert(new Item2 { Name = "123", IdRef = 1 });
                         successExecution = true;
                     }
-                    catch(Exception ex)
+                    catch (Exception ex)
                     {
                         logger.LogError(new EventId(1), ex, "exception");
                         successExecution = false;
